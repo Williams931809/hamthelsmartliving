@@ -1,0 +1,40 @@
+const fs=require('node:fs');const ts=require('typescript');const {DatabaseSync}=require('node:sqlite');const assert=require('node:assert/strict');
+const compiled=ts.transpileModule(fs.readFileSync('lib/store-api.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText;fs.writeFileSync('.sites-runtime/store-api.cjs',compiled);
+const {storeApi}=require('../.sites-runtime/store-api.cjs');const sqlite=new DatabaseSync(':memory:');sqlite.exec(fs.readFileSync('drizzle/0000_yummy_sugar_man.sql','utf8'));
+const db={prepare(sql){let params=[];return{bind(...p){params=p;return this},async first(){return sqlite.prepare(sql).get(...params)||null},async all(){return {results:sqlite.prepare(sql).all(...params)}},async run(){return sqlite.prepare(sql).run(...params)}}},async batch(statements){return Promise.all(statements.map(s=>s.run()))}};
+async function call(entity,action,args=[],headers={}){return storeApi(new Request('https://test.local/api/store/records',{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify({entity,action,args})}),{DB:db})}
+(async()=>{
+ let r=await call('Product','filter',[{published:true},{limit:300,sort:'sort_order'}]);const products=(await r.json()).items;assert.equal(products.length,167);assert.equal(products[0].name,'Tenon M88 Single Smart Door');
+ for(const p of products){if(p.compare_price>0&&p.compare_price>p.price)assert.equal(p.price,Math.round(p.compare_price*0.8),'Expected 20% discount for '+p.name);if(p.category==='smart-locks'){assert.equal(p.overview_video_url,'/videos/'+p.id+'.mp4');assert.ok(fs.existsSync('public'+p.overview_video_url));}}
+ assert.equal((await call('Product','update',[products[0].id,{price:1}])).status,403);
+ assert.equal((await call('Order','list')).status,403);
+ const firstVisitor=await storeApi(new Request('https://test.local/api/store/me',{headers:{'oai-authenticated-user-id':'first-stranger'}}),{DB:db});assert.equal((await firstVisitor.json()).role,'user');
+ let owner=await storeApi(new Request('https://test.local/api/store/me',{headers:{'oai-authenticated-user-id':'2ecfbfc9-d134-4453-8598-3ba863cac040'}}),{DB:db});assert.equal((await owner.json()).role,'admin');
+ const other=await storeApi(new Request('https://test.local/api/store/me',{headers:{'oai-authenticated-user-id':'visitor'}}),{DB:db});assert.equal((await other.json()).role,'user');
+ assert.equal((await call('Product','delete',[products[0].id],{'oai-authenticated-user-id':'visitor'})).status,403);
+ const p=products.find(p=>p.name==='Tenon A9X Smart Lock');const order={customer_name:'Local QA',phone:'0000000000',address:'Test only',city:'Test',state:'Test',payment_method:'Bank transfer',items:[{product_id:p.id,price:1,quantity:2}],total:2};
+ let created=await call('Order','create',[order]);assert.equal(created.status,200);const saved=await created.json();assert.equal(saved.total,p.price*2);assert.equal(saved.items[0].price,p.price);
+ r=await call('Order','list',[],{'oai-authenticated-user-id':'2ecfbfc9-d134-4453-8598-3ba863cac040'});assert.equal((await r.json()).length,1);
+ const unavailable=products.find(p=>p.stock_status==='Out of stock');assert.equal((await call('Order','create',[{...order,items:[{product_id:unavailable.id,quantity:1}]}])).status,400);
+ assert.equal((await call('Subscriber','create',[{email:'bad'}])).status,400);
+ assert.equal((await call('Product','list',[],{origin:'https://evil.test'})).status,403);
+ const headers={'oai-authenticated-user-id':'2ecfbfc9-d134-4453-8598-3ba863cac040'};
+ assert.equal((await call('Product','update',[p.id,{published:false}],headers)).status,200);
+ assert.equal(await (await call('Product','get',[p.id])).json(),null);
+ assert.equal((await (await call('Product','get',[p.id],headers)).json()).id,p.id);
+ await call('Product','update',[p.id,{published:true}],headers);
+ assert.equal((await call('Order','create',[{...order,payment_method:'Pay on delivery'}])).status,400);
+ assert.equal((await call('Order','create',[{...order,phone:'wrong'}])).status,400);
+ assert.equal((await call('Product','update',[p.id,{price:-2}],headers)).status,400);
+ const files=new Map();const bucket={async put(k,bytes,opts){files.set(k,{bytes,opts})},async get(k){const f=files.get(k);return f?{body:f.bytes,writeHttpMetadata(h){h.set('content-type',f.opts.httpMetadata.contentType)}}:null}};
+ const upload=(h={},type='image/png')=>storeApi(new Request('https://test.local/api/store/upload',{method:'POST',headers:{'content-type':type,...h},body:new Uint8Array([137,80,78,71])}),{DB:db,BUCKET:bucket});
+ assert.equal((await upload()).status,403);
+ assert.equal((await upload(headers,'text/html')).status,415);
+ const uploaded=await upload(headers);assert.equal(uploaded.status,200);const media=await uploaded.json();
+ const retrieved=await storeApi(new Request('https://test.local'+media.file_url),{DB:db,BUCKET:bucket});assert.equal(retrieved.headers.get('content-type'),'image/png');assert.equal((await retrieved.arrayBuffer()).byteLength,4);
+ const enquiry=await call('ContactMessage','create',[{name:'Local QA',email:'qa@example.invalid',message:'Local contact persistence check',interest:'Installation advice',status:'New'}]);assert.equal(enquiry.status,200);
+ assert.equal((await call('ContactMessage','list')).status,403);
+ const inbox=await (await call('ContactMessage','list',[],headers)).json();assert.ok(inbox.some(m=>m.message==='Local contact persistence check'&&m.status==='New'));
+ assert.equal((await call('ContactMessage','create',[{name:'',message:'test'}])).status,400);
+ console.log('Passed: 167 products, 20% discount arithmetic, 146 video mappings/files, original ordering, owner-only administration, visitor restrictions, order persistence, trusted prices, unavailable stock, input validation and origin checks.');
+})().catch(e=>{console.error(e);process.exit(1)});
