@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "true",
+  "buildCommand": "node scripts/build-vercel.mjs",
+  "outputDirectory": "public",
+  "redirects": [
+    {"source": "/admin/:path*", "destination": "https://hamthelsmartliving.lovableholdings.chatgpt.site/admin/:path*", "permanent": false},
+    {"source": "/:page(login|register|forgot-password|reset-password|signin-with-chatgpt|signout-with-chatgpt)", "destination": "https://hamthelsmartliving.lovableholdings.chatgpt.site/:page", "permanent": false},
+    {"source": "/auth/login", "destination": "https://hamthelsmartliving.lovableholdings.chatgpt.site/login", "permanent": false}
+  ],
+  "rewrites": [
+    {"source": "/:page(shop|videos|saved|compare|checkout|about|contact|faq|reviews|quiz)", "destination": "/index.html"},
+    {"source": "/product/:slug", "destination": "/index.html"},
+    {"source": "/api/store/media/:key", "destination": "https://hamthelsmartliving.lovableholdings.chatgpt.site/api/store/media/:key"}
+  ]
+}
